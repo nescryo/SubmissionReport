@@ -1,5 +1,7 @@
 {
     "name": "leconfe/submission-report",
+    "description": "Submission Report plugin for Leconfe scheduled conferences.",
+    "license": "proprietary",
     "autoload": {
         "psr-4": {
             "SubmissionReport\\": "src/"
@@ -10,5 +12,8 @@
             "name": "Leconfe"
         }
     ],
-    "require": {}
+    "require": {},
+    "scripts": {
+        "test": "@php ../../vendor/bin/phpunit -c phpunit.xml"
+    }
 }

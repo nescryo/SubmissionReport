@@ -6,6 +6,7 @@ use App\Models\Author;
 use App\Models\Enums\SubmissionStatus;
 use App\Models\Review;
 use App\Models\Submission;
+use App\Models\SubmissionFormItem;
 use App\Models\Topic;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Concerns\InteractsWithForms;
@@ -16,6 +17,8 @@ use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
+use OpenSpout\Common\Entity\Cell;
+use OpenSpout\Common\Entity\Cell\StringCell;
 use OpenSpout\Common\Entity\Row;
 use Squire\Models\Country;
 use Illuminate\Support\Str;
@@ -56,7 +59,7 @@ class SubmissionReportPage extends Page implements HasForms
     public function mount(): void
     {
         $this->form->fill([
-            'columns' => array_keys(static::$options),
+            'columns' => array_keys($this->getReportColumnOptions()),
         ]);
     }
 
@@ -97,7 +100,7 @@ class SubmissionReportPage extends Page implements HasForms
                 CheckboxList::make('columns')
                     ->required()
                     ->label('Select Columns to be exported')
-                    ->options(static::$options)
+                    ->options($this->getReportColumnOptions())
                     ->bulkToggleable()
             ])
             ->statePath('formData');
@@ -105,8 +108,11 @@ class SubmissionReportPage extends Page implements HasForms
 
     public function submit()
     {
-        $data = $this->form->getState();
+        return $this->export($this->form->getState());
+    }
 
+    protected function export(array $data)
+    {
         $name = implode('-', [
             'submissions',
             app()->getCurrentScheduledConference()->getKey(),
@@ -114,6 +120,11 @@ class SubmissionReportPage extends Page implements HasForms
         ]);
         $filename = Storage::disk('private-files')->path(auth()->user()->id . $name . '.xlsx');
 
+        $columnOptions = $this->getReportColumnOptions();
+        $data['columns'] = array_values(array_filter(
+            $data['columns'],
+            fn ($column) => is_string($column) && array_key_exists($column, $columnOptions)
+        ));
         $columns = $data['columns'];
         $isReviewersIncluded = in_array('reviewers', $columns);
         if ($isReviewersIncluded) {
@@ -130,14 +141,17 @@ class SubmissionReportPage extends Page implements HasForms
 
             // Remove 'reviewers' from columns as we will handle it differently
             $columns = array_filter($columns, fn($column) => $column !== 'reviewers');
-            $data['columns']  = array_filter($data['columns'], fn($column) => $column !== 'reviewers');
+            $data['columns'] = array_filter($data['columns'], fn ($column) => $column !== 'reviewers');
         }
 
 
-        $writer = new \OpenSpout\Writer\XLSX\Writer();
+        $writer = new \OpenSpout\Writer\XLSX\Writer;
         $writer->openToFile($filename);
 
-        $writer->addRow(Row::fromValues($columns));
+        $writer->addRow(Row::fromValues(array_map(
+            fn (string $column) => $this->getReportColumnHeader($column, $columnOptions),
+            $columns
+        )));
 
         $submissions = Submission::query()
             ->with([
@@ -161,14 +175,14 @@ class SubmissionReportPage extends Page implements HasForms
             foreach ($data['columns'] as $column) {
                 $rowData[] = $this->getReportColumn($submission, $column);
             }
-            if($isReviewersIncluded) { 
+            if ($isReviewersIncluded) {
                 foreach ($submission->reviews as $review) {
                     $rowData[] = Str::squish($review->user->given_name . ' ' . $review->user->family_name);
                     $rowData[] = $review->score;
                 }
             }
 
-            $writer->addRow(Row::fromValues($rowData));
+            $writer->addRow($this->makeReportRow($rowData));
         }
 
 
@@ -185,6 +199,15 @@ class SubmissionReportPage extends Page implements HasForms
 
     protected function getReportColumn(Submission $submission, $column)
     {
+        if (($formItemId = $this->getSubmissionFormResponseId($column)) !== null) {
+            $responses = $submission->getMeta('submission_form_responses', []);
+            $response = is_array($responses) ? ($responses[$formItemId] ?? null) : null;
+
+            return $this->escapeSpreadsheetFormula(
+                is_array($response) ? implode(', ', $response) : $response
+            );
+        }
+
         $authorCorrespondanceNameFn = function (Submission $submission) {
             $author = Author::find($submission->getMeta('primary_contact_id'));
 
@@ -213,5 +236,68 @@ class SubmissionReportPage extends Page implements HasForms
             'average_score' => $submission->reviews_avg_score ? round($submission->reviews_avg_score, 1) : null,
             default => null,
         };
+    }
+
+    public function getReportColumnOptions(): array
+    {
+        return array_merge(
+            static::$options,
+            SubmissionFormItem::query()
+                ->where('scheduled_conference_id', app()->getCurrentScheduledConferenceId())
+                ->where('type', '!=', SubmissionFormItem::TYPE_UPLOAD)
+                ->ordered()
+                ->with('meta')
+                ->get()
+                ->mapWithKeys(fn (SubmissionFormItem $item) => [
+                    $this->getSubmissionFormResponseColumn($item->getKey()) => $item->getMeta('name'),
+                ])
+                ->all()
+        );
+    }
+
+    protected function getReportColumnHeader(string $column, array $columnOptions = []): string
+    {
+        if ($this->getSubmissionFormResponseId($column) === null) {
+            return $column;
+        }
+
+        return $this->escapeSpreadsheetFormula(
+            $columnOptions[$column] ?? $this->getReportColumnOptions()[$column] ?? $column
+        );
+    }
+
+    protected function escapeSpreadsheetFormula(mixed $value): mixed
+    {
+        if (! is_string($value) || $value === '') {
+            return $value;
+        }
+
+        return in_array($value[0], ['=', '+', '-', '@'], true) ? "'{$value}" : $value;
+    }
+
+    protected function makeReportRow(array $values): Row
+    {
+        return new Row(array_map(
+            fn ($value) => $value === null || $value === '' ? new StringCell('', null) : Cell::fromValue($value),
+            $values
+        ));
+    }
+
+    protected function getSubmissionFormResponseColumn(int $formItemId): string
+    {
+        return 'submission_form_response_'.$formItemId;
+    }
+
+    protected function getSubmissionFormResponseId(string $column): ?int
+    {
+        $prefix = 'submission_form_response_';
+
+        if (! Str::startsWith($column, $prefix)) {
+            return null;
+        }
+
+        $formItemId = Str::after($column, $prefix);
+
+        return ctype_digit($formItemId) && (int) $formItemId > 0 ? (int) $formItemId : null;
     }
 }
