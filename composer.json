@@ -12,7 +12,9 @@
             "name": "Leconfe"
         }
     ],
-    "require": {},
+    "require": {
+        "php": "^8.2 || ^8.3 || ^8.4"
+    },
     "scripts": {
         "test": "@php ../../vendor/bin/phpunit -c phpunit.xml"
     }

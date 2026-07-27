@@ -12,11 +12,13 @@ class SubmissionReportPlugin extends Plugin
 	public function boot() {}
 
 
-	public function onPanel(Panel $panel): void
+	public function onPanel(mixed $panel): void
 	{
-		$panel->pages([
-			SubmissionReportPage::class,
-		]);
+		if (is_object($panel) && method_exists($panel, 'pages')) {
+			$panel->pages([
+				SubmissionReportPage::class,
+			]);
+		}
 	}
 
 	public function getPluginPage(): ?string
