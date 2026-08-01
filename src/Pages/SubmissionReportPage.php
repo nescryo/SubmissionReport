@@ -110,11 +110,7 @@ class SubmissionReportPage extends Page implements HasForms
                 CheckboxList::make('status')
                     ->label('Select Submission Status that you want to export')
                     ->options(function () {
-                        $statuses = class_exists('App\Models\Enums\SubmissionStatus')
-                            ? \App\Models\Enums\SubmissionStatus::values()
-                            : ['Incomplete', 'Queued', 'On Review', 'On Presentation', 'Editing', 'Published', 'Declined', 'Withdrawn'];
-
-                        return collect(array_combine($statuses, $statuses))
+                        return collect(array_combine(SubmissionStatus::values(), SubmissionStatus::values()))
                             ->filter(fn ($value) => ! in_array($value, ['Payment Declined', 'On Payment'], true))
                             ->all();
                     })
